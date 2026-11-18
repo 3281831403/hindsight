@@ -565,8 +565,8 @@ class Chrome(WebBrowser):
                     visit_id=row.get('visit_id'),
                     url=row.get('url'),
                     title=row.get('title'),
-                    visit_time=utils.to_datetime(row.get('visit_time'), self.timezone),
-                    last_visit_time=utils.to_datetime(row.get('last_visit_time'), self.timezone),
+                    visit_time=utils.to_datetime(row.get('visit_time'), self.timezone, format='webkit_us'),
+                    last_visit_time=utils.to_datetime(row.get('last_visit_time'), self.timezone, format='webkit_us'),
                     visit_count=row.get('visit_count'),
                     typed_count=row.get('typed_count'),
                     from_visit=row.get('from_visit'),
@@ -663,7 +663,7 @@ class Chrome(WebBrowser):
 
                 new_row = Chrome.MediaItem(
                     self.profile_path, row.get('url'), row_title,
-                    utils.to_datetime(row.get('last_updated_time_s'), self.timezone), position,
+                    utils.to_datetime(row.get('last_updated_time_s'), self.timezone, format='epoch_s'), position,
                     duration, row.get('source_title'), watch_time, row.get('has_video'), row.get('has_audio'))
 
                 new_row.row_type = row_type
@@ -769,6 +769,13 @@ class Chrome(WebBrowser):
                     FROM downloads'''}
 
         source_item = utils.relpath(os.path.join(path, database), self.profile_path)
+
+        # downloads times are epoch seconds up to History DB v23; the v24 migration
+        # (download_database.cc MigrateDownloadsReasonPathsAndDangerType) rewrote them
+        # as WebKit microseconds. The unit is a property of the DB version, so declare
+        # it rather than inferring it from each value's magnitude.
+        download_time_format = 'epoch_s' if version[0] < 24 else 'webkit_us'
+
         with self._execute_compatible_query(
                 path, database, query, version, 'Download items') as cursor:
             if cursor is None:
@@ -796,8 +803,8 @@ class Chrome(WebBrowser):
                     new_row = Chrome.DownloadItem(
                         self.profile_path, download_id, final_url, row.get('received_bytes'),
                         row.get('total_bytes'), row.get('state'), row.get('full_path'),
-                        utils.to_datetime(row.get('start_time'), self.timezone),
-                        utils.to_datetime(row.get('end_time'), self.timezone), row.get('target_path'),
+                        utils.to_datetime(row.get('start_time'), self.timezone, format=download_time_format),
+                        utils.to_datetime(row.get('end_time'), self.timezone, format=download_time_format), row.get('target_path'),
                         row.get('current_path'), row.get('opened'), row.get('danger_type'),
                         row.get('interrupt_reason'), row.get('etag'), row.get('last_modified'),
                         None,  # chain collapsed into url_chain below
@@ -805,7 +812,7 @@ class Chrome(WebBrowser):
                         referrer=row.get('referrer'), site_url=row.get('site_url'),
                         tab_url=row.get('tab_url'), tab_referrer_url=row.get('tab_referrer_url'),
                         mime_type=row.get('mime_type'), original_mime_type=row.get('original_mime_type'),
-                        last_access_time=(utils.to_datetime(lat, self.timezone, none_if_unset=True) if lat else None),
+                        last_access_time=(utils.to_datetime(lat, self.timezone, none_if_unset=True, format='webkit_us') if lat else None),
                         transient=row.get('transient'), by_ext_id=row.get('by_ext_id'),
                         by_ext_name=row.get('by_ext_name'), by_web_app_id=row.get('by_web_app_id'),
                         url_chain=ordered_chain if len(ordered_chain) > 1 else None)
@@ -941,8 +948,8 @@ class Chrome(WebBrowser):
                     url=ip.url_chain[-1] if ip.url_chain else '',
                     received_bytes=ip.received_bytes, total_bytes=ip.total_bytes, state=ip.state,
                     full_path=None,
-                    start_time=utils.to_datetime(ip.start_time, self.timezone, none_if_unset=True),
-                    end_time=utils.to_datetime(ip.end_time, self.timezone, none_if_unset=True),
+                    start_time=utils.to_datetime(ip.start_time, self.timezone, none_if_unset=True, format='webkit_us'),
+                    end_time=utils.to_datetime(ip.end_time, self.timezone, none_if_unset=True, format='webkit_us'),
                     target_path=decode_string16_pickle(ip.target_path),
                     current_path=decode_string16_pickle(ip.current_path),
                     danger_type=ip.danger_type, interrupt_reason=ip.interrupt_reason,
@@ -1097,10 +1104,10 @@ class Chrome(WebBrowser):
                 # Create a base cookie item with all shared data
                 base_cookie = Chrome.CookieItem(
                     self.profile_path, row.get('host_key'), row.get('path'), row.get('name'), cookie_value,
-                    utils.to_datetime(row.get('creation_utc'), self.timezone),
-                    utils.to_datetime(row.get('last_access_utc'), self.timezone), row.get('secure'),
+                    utils.to_datetime(row.get('creation_utc'), self.timezone, format='webkit_us'),
+                    utils.to_datetime(row.get('last_access_utc'), self.timezone, format='webkit_us'), row.get('secure'),
                     row.get('httponly'), row.get('persistent'), row.get('has_expires'),
-                    utils.to_datetime(row.get('expires_utc'), self.timezone), row.get('priority'),
+                    utils.to_datetime(row.get('expires_utc'), self.timezone, format='webkit_us'), row.get('priority'),
                     row.get('top_frame_site_key'))
 
                 base_cookie.url = base_cookie.host_key + base_cookie.path
@@ -1111,7 +1118,7 @@ class Chrome(WebBrowser):
                 # Pre-v103 cookie DBs have no last_update_utc column; none_if_unset avoids
                 # logging a parse warning per row and fabricating an epoch-0 timestamp.
                 base_cookie.last_update_utc = utils.to_datetime(
-                    row.get('last_update_utc'), self.timezone, none_if_unset=True)
+                    row.get('last_update_utc'), self.timezone, none_if_unset=True, format='webkit_us')
                 zero_timestamp = utils.to_datetime(0, self.timezone)
 
                 # Create the row for when the cookie was created
@@ -1121,8 +1128,9 @@ class Chrome(WebBrowser):
                 results.append(created_row)
 
                 # If the cookie was created and accessed at the same time (only used once), or if the last accessed
-                # time is 0 (happens on iOS), don't create an accessed row
-                if base_cookie.last_access_utc not in (base_cookie.creation_utc, zero_timestamp):
+                # time is 0 (happens on iOS) or missing, don't create an accessed row
+                if base_cookie.last_access_utc \
+                        and base_cookie.last_access_utc not in (base_cookie.creation_utc, zero_timestamp):
                     accessed_row = copy.copy(base_cookie)
                     accessed_row.row_type = 'cookie (accessed)'
                     accessed_row.timestamp = accessed_row.last_access_utc
@@ -1162,7 +1170,7 @@ class Chrome(WebBrowser):
             for row in cursor:
                 if row.get('blacklisted_by_user') == 1:
                     never_save_row = Chrome.LoginItem(
-                        self.profile_path, utils.to_datetime(row.get('date_created'), self.timezone),
+                        self.profile_path, utils.to_datetime(row.get('date_created'), self.timezone, format='webkit_us'),
                         url=row.get('origin_url'), name=row.get('username_element'),
                         value='', count=row.get('times_used'),
                         interpretation='User chose to "Never save password" for this site')
@@ -1176,7 +1184,7 @@ class Chrome(WebBrowser):
                         interpretation_str += f' (times used: {row.get("times_used")})'
 
                     username_row = Chrome.LoginItem(
-                        self.profile_path, utils.to_datetime(row.get('date_created'), self.timezone),
+                        self.profile_path, utils.to_datetime(row.get('date_created'), self.timezone, format='webkit_us'),
                         url=row.get('origin_url'), name=row.get('username_element'),
                         value=row.get('username_value'), count=row.get('times_used'),
                         interpretation=interpretation_str)
@@ -1191,7 +1199,7 @@ class Chrome(WebBrowser):
                             interpretation_str += f'; times used: {row.get("times_used")})'
 
                         username_row = Chrome.LoginItem(
-                            self.profile_path, utils.to_datetime(row.get('date_last_used'), self.timezone),
+                            self.profile_path, utils.to_datetime(row.get('date_last_used'), self.timezone, format='webkit_us'),
                             url=row.get('origin_url'), name=row.get('username_element'),
                             value=row.get('username_value'), count=row.get('times_used'),
                             interpretation=interpretation_str)
@@ -1219,7 +1227,7 @@ class Chrome(WebBrowser):
                         password = self.decrypt_cookie(row.get('password_value'))
 
                     password_row = Chrome.LoginItem(
-                        self.profile_path, utils.to_datetime(row.get('date_created'), self.timezone),
+                        self.profile_path, utils.to_datetime(row.get('date_created'), self.timezone, format='webkit_us'),
                         url=row.get('origin_url'), name=row.get('password_element'),
                         value=password, count=row.get('times_used'),
                         interpretation='User chose to save the credentials entered')
@@ -1234,7 +1242,7 @@ class Chrome(WebBrowser):
             if cursor is not None:
                 for row in cursor:
                     stats_row = Chrome.LoginItem(
-                        self.profile_path, utils.to_datetime(row.get('update_time'), self.timezone),
+                        self.profile_path, utils.to_datetime(row.get('update_time'), self.timezone, format='webkit_us'),
                         url=row.get('origin_domain'), name='',
                         value=row.get('username_value'), count=row.get('dismissal_count'),
                         interpretation=f'User declined to save the password for this site '
@@ -1270,14 +1278,14 @@ class Chrome(WebBrowser):
                     autofill_value = '<encrypted>'
 
                 created_item = Chrome.AutofillItem(
-                    self.profile_path, utils.to_datetime(row.get('date_created'), self.timezone),
+                    self.profile_path, utils.to_datetime(row.get('date_created'), self.timezone, format='webkit_us'),
                     row.get('name'), autofill_value, row.get('count'))
                 created_item.source_item = source_item
                 results.append(created_item)
 
                 if row.get('date_last_used') and row.get('count') > 1:
                     last_used_item = Chrome.AutofillItem(
-                        self.profile_path, utils.to_datetime(row.get('date_last_used'), self.timezone),
+                        self.profile_path, utils.to_datetime(row.get('date_last_used'), self.timezone, format='webkit_us'),
                         row.get('name'), autofill_value, row.get('count'))
                     last_used_item.source_item = source_item
                     results.append(last_used_item)
@@ -1329,7 +1337,7 @@ class Chrome(WebBrowser):
                         continue
 
                     dips_record = Chrome.SiteSetting(
-                        self.profile_path, row['site'], utils.to_datetime(row.get(column), self.timezone),
+                        self.profile_path, row['site'], utils.to_datetime(row.get(column), self.timezone, format='webkit_us'),
                         column, '', '')
                     dips_record.row_type = 'site setting (dips)'
                     dips_record.source_item = source_item
@@ -1363,7 +1371,7 @@ class Chrome(WebBrowser):
 
                 dips_popup_record = Chrome.SiteSetting(
                     self.profile_path, row['opener_site'],
-                    utils.to_datetime(row.get('last_popup_time'), self.timezone),
+                    utils.to_datetime(row.get('last_popup_time'), self.timezone, format='webkit_us'),
                     name, row['popup_site'], '')
                 dips_popup_record.row_type = 'site setting (dips)'
                 dips_popup_record.source_item = source_item
@@ -1393,7 +1401,7 @@ class Chrome(WebBrowser):
                 for child in children:
                     if child['type'] == 'url':
                         bm = Chrome.BookmarkItem(
-                            self.profile_path, utils.to_datetime(child['date_added'], self.timezone),
+                            self.profile_path, utils.to_datetime(child['date_added'], self.timezone, format='webkit_us'),
                             child['name'], child['url'], parent)
                         bm.source_item = source_item
                         results.append(bm)
@@ -1401,7 +1409,7 @@ class Chrome(WebBrowser):
                     elif child['type'] == 'folder':
                         new_parent = parent + ' > ' + child['name']
                         bm = Chrome.BookmarkFolderItem(
-                            self.profile_path, utils.to_datetime(child['date_added'], self.timezone),
+                            self.profile_path, utils.to_datetime(child['date_added'], self.timezone, format='webkit_us'),
                             child['date_modified'], child['name'], parent)
                         bm.source_item = source_item
                         results.append(bm)
@@ -1488,7 +1496,7 @@ class Chrome(WebBrowser):
                         results.append(Chrome.LocalStorageItem(
                             profile=self.profile_path, origin=ls_file[:-13], key=row.get('key', ''),
                             value=printable_value, seq=row.get('rowid', 0), state='Live',
-                            last_modified=utils.to_datetime(ls_created, self.timezone),
+                            last_modified=utils.to_datetime(ls_created, self.timezone, format='epoch_s'),
                             source_path=os.path.join(ls_path, ls_file)))
 
                 except Exception as e:
@@ -1541,7 +1549,7 @@ class Chrome(WebBrowser):
         """
         if active_time >= cls.SESSION_LAST_ACTIVE_WALL_CLOCK_MIN:
             # base::Time -- a genuine wall-clock timestamp.
-            parsed_time = utils.to_datetime(active_time, timezone, none_on_failure=True)
+            parsed_time = utils.to_datetime(active_time, timezone, none_on_failure=True, format='webkit_us')
             if parsed_time is not None:
                 return parsed_time, None
             return None, f'unparsed timestamp value: {active_time}'
@@ -1782,7 +1790,9 @@ class Chrome(WebBrowser):
                             timestamp = command.timestamp.replace(tzinfo=datetime.timezone.utc)
                             timestamp = utils.to_datetime(timestamp, self.timezone)
                         else:
-                            timestamp = utils.to_datetime(0, self.timezone)
+                            # A navigation without a recorded time has no time;
+                            # None keeps it off the 1970 line of the Timeline.
+                            timestamp = None
 
                         # Build value parts in order: nav index, tab context, short fields, then long URL fields
                         value_parts = []
@@ -1929,7 +1939,7 @@ class Chrome(WebBrowser):
                                     continue
                                 item = Chrome.SessionItem(
                                     self.profile_path, url='', title='',
-                                    timestamp=utils.to_datetime(close_time, self.timezone), session_id=tab_id,
+                                    timestamp=utils.to_datetime(close_time, self.timezone, format='webkit_us'), session_id=tab_id,
                                     source_path=file_path)
                                 item.row_type = 'session (tab closed)'
                                 item.source_item = source_item
@@ -1943,7 +1953,7 @@ class Chrome(WebBrowser):
                                     continue
                                 item = Chrome.SessionItem(
                                     self.profile_path, url='', title='',
-                                    timestamp=utils.to_datetime(close_time, self.timezone), source_path=file_path)
+                                    timestamp=utils.to_datetime(close_time, self.timezone, format='webkit_us'), source_path=file_path)
                                 item.row_type = 'session (window closed)'
                                 # For window events, session_id holds the window_id
                                 item.session_id = window_id
@@ -1981,7 +1991,7 @@ class Chrome(WebBrowser):
                                     continue
                                 item = Chrome.SessionItem(
                                     self.profile_path, url='', title='',
-                                    timestamp=utils.to_datetime(close_time, self.timezone), session_id=tab_id,
+                                    timestamp=utils.to_datetime(close_time, self.timezone, format='webkit_us'), session_id=tab_id,
                                     nav_index=nav_index, source_path=file_path)
                                 item.row_type = 'session (closed tab)'
                                 item.value = f'Navigation Index: {nav_index}'
@@ -2020,7 +2030,7 @@ class Chrome(WebBrowser):
 
                                     item = Chrome.SessionItem(
                                         self.profile_path, url='', title='',
-                                        timestamp=utils.to_datetime(close_time, self.timezone), source_path=file_path)
+                                        timestamp=utils.to_datetime(close_time, self.timezone, format='webkit_us'), source_path=file_path)
                                     # For window events, store window_id as session_id for the Window ID column
                                     item.session_id = window_id
                                     item.row_type = 'session (closed window)'
@@ -2583,8 +2593,8 @@ class Chrome(WebBrowser):
             # Prefer first_install_time; fall back to legacy install_time.
             raw_install = v.get('first_install_time') or v.get('install_time')
             raw_update = v.get('last_update_time')
-            install_dt = utils.to_datetime(raw_install, self.timezone, quiet=True) if raw_install else None
-            update_dt = utils.to_datetime(raw_update, self.timezone, quiet=True) if raw_update else None
+            install_dt = utils.to_datetime(raw_install, self.timezone, quiet=True, format='webkit_us') if raw_install else None
+            update_dt = utils.to_datetime(raw_update, self.timezone, quiet=True, format='webkit_us') if raw_update else None
 
             name = manifest.get('name')
 
@@ -2932,7 +2942,7 @@ class Chrome(WebBrowser):
             if prefs['browser'].get('last_clear_browsing_data_time'):
                 check_and_append_pref(
                     prefs['browser'], 'last_clear_browsing_data_time',
-                    utils.friendly_date(prefs['browser']['last_clear_browsing_data_time']),
+                    utils.friendly_date(utils.to_datetime(prefs['browser']['last_clear_browsing_data_time'], format='webkit_us')),
                     'Last time the history was cleared')
             check_and_append_pref(prefs['browser'], 'clear_lso_data_enabled')
             if prefs['browser'].get('clear_data'):
@@ -2993,7 +3003,7 @@ class Chrome(WebBrowser):
                                 append_pref(host, zoom_level_to_zoom_factor(config.get('zoom_level')))
                                 timestamped_preference_item = Chrome.SiteSetting(
                                     self.profile_path, url=host,
-                                    timestamp=utils.to_datetime(config.get('last_modified'), self.timezone),
+                                    timestamp=utils.to_datetime(config.get('last_modified'), self.timezone, format='webkit_us'),
                                     key=f'per_host_zoom_levels [in {preferences_file}.partition]',
                                     value=f'Changed zoom level to {zoom_level_to_zoom_factor(config.get("zoom_level"))}',
                                     interpretation='')
@@ -3008,7 +3018,7 @@ class Chrome(WebBrowser):
                 timestamped_preference_item = Chrome.SiteSetting(
                     self.profile_path, url='',
                     timestamp=utils.to_datetime(
-                        prefs['password_manager']['profile_store_date_last_used_for_filling'], self.timezone),
+                        prefs['password_manager']['profile_store_date_last_used_for_filling'], self.timezone, format='webkit_us'),
                     key=f'profile_store_date_last_used_for_filling [in {preferences_file}.password_manager]',
                     value=prefs['password_manager']['profile_store_date_last_used_for_filling'], interpretation='')
                 timestamped_preference_item.row_type += ' (password fill)'
@@ -3052,7 +3062,7 @@ class Chrome(WebBrowser):
 
                                     pref_item = Chrome.SiteSetting(
                                         self.profile_path, url=origin,
-                                        timestamp=utils.to_datetime(pref_data['last_modified'], self.timezone),
+                                        timestamp=utils.to_datetime(pref_data['last_modified'], self.timezone, format='webkit_us'),
                                         key=f'{exception_type} '
                                             f'[in {preferences_file}.profile.content_settings.exceptions]',
                                         value=str(pref_data), interpretation=interpretation)
@@ -3068,7 +3078,7 @@ class Chrome(WebBrowser):
                                     if media_playback_time:
                                         engagement_item = Chrome.SiteSetting(
                                             self.profile_path, url=origin,
-                                            timestamp=utils.to_datetime(media_playback_time, self.timezone),
+                                            timestamp=utils.to_datetime(media_playback_time, self.timezone, format='webkit_us'),
                                             key=f'lastMediaPlaybackTime in {preferences_file}.profile.'
                                                 f'content_settings.exceptions.media_engagement]',
                                             value=str(pref_data), interpretation='')
@@ -3079,7 +3089,7 @@ class Chrome(WebBrowser):
                                     elif engagement_time:
                                         engagement_item = Chrome.SiteSetting(
                                             self.profile_path, url=origin,
-                                            timestamp=utils.to_datetime(engagement_time, self.timezone),
+                                            timestamp=utils.to_datetime(engagement_time, self.timezone, format='webkit_us'),
                                             key=f'lastEngagementTime in {preferences_file}.profile.'
                                                 f'content_settings.exceptions.site_engagement]',
                                             value=str(pref_data), interpretation='')
@@ -3128,7 +3138,7 @@ class Chrome(WebBrowser):
 
                             perm_item = Chrome.SiteSetting(
                                 self.profile_path, url='',
-                                timestamp=utils.to_datetime(permission_data['time'], self.timezone),
+                                timestamp=utils.to_datetime(permission_data['time'], self.timezone, format='webkit_us'),
                                 key=f'{permission_type} '
                                     f'[in {preferences_file}.profile.content_settings.permission_actions]',
                                 value=str(permission_data), interpretation=interpretation)
@@ -3149,7 +3159,7 @@ class Chrome(WebBrowser):
                     if prefs['extensions']['autoupdate'].get('last_check'):
                         pref_item = Chrome.PreferenceItem(
                             self.profile_path, url='',
-                            timestamp=utils.to_datetime(prefs['extensions']['autoupdate']['last_check'], self.timezone),
+                            timestamp=utils.to_datetime(prefs['extensions']['autoupdate']['last_check'], self.timezone, format='webkit_us'),
                             key=f'autoupdate.last_check [in {preferences_file}.extensions]',
                             value=prefs['extensions']['autoupdate']['last_check'], interpretation='')
                         pref_item.source_item = source_item
@@ -3173,7 +3183,7 @@ class Chrome(WebBrowser):
                 for session_event in prefs['sessions']['event_log']:
                     pref_item = Chrome.PreferenceItem(
                         self.profile_path, url='',
-                        timestamp=utils.to_datetime(session_event['time'], self.timezone),
+                        timestamp=utils.to_datetime(session_event['time'], self.timezone, format='webkit_us'),
                         key=f'Session event log [in {preferences_file}.sessions]',
                         value=str(session_event),
                         interpretation=f'{session_event["type"]} - '
@@ -3191,7 +3201,7 @@ class Chrome(WebBrowser):
                 try:
                     pref_item = Chrome.PreferenceItem(
                         self.profile_path, url='',
-                        timestamp=utils.to_datetime(prefs['signin']['signedin_time'], self.timezone),
+                        timestamp=utils.to_datetime(prefs['signin']['signedin_time'], self.timezone, format='webkit_us'),
                         key=f'signedin_time [in {preferences_file}.signin]',
                         value=prefs['signin']['signedin_time'], interpretation='')
                     pref_item.source_item = source_item
@@ -3203,11 +3213,11 @@ class Chrome(WebBrowser):
             append_group('Sync Settings')
             if prefs['sync'].get('last_poll_time'):
                 check_and_append_pref(prefs['sync'], 'last_poll_time',
-                                      utils.friendly_date(prefs['sync']['last_poll_time']))
+                                      utils.friendly_date(utils.to_datetime(prefs['sync']['last_poll_time'], format='webkit_us')))
 
             if prefs['sync'].get('last_synced_time'):
                 check_and_append_pref(prefs['sync'], 'last_synced_time',
-                                      utils.friendly_date(prefs['sync']['last_synced_time']))
+                                      utils.friendly_date(utils.to_datetime(prefs['sync']['last_synced_time'], format='webkit_us')))
 
             sync_enabled_items = ['apps', 'autofill', 'bookmarks', 'cache_guid', 'extensions', 'gaia_id',
                                   'has_setup_completed', 'keep_everything_synced', 'passwords', 'preferences',
@@ -3232,7 +3242,7 @@ class Chrome(WebBrowser):
                         timestamp = timestamp[0]
                     assert isinstance(timestamp, float)
                     pref_item = Chrome.PreferenceItem(
-                        self.profile_path, url='', timestamp=utils.to_datetime(timestamp, self.timezone),
+                        self.profile_path, url='', timestamp=utils.to_datetime(timestamp, self.timezone, format='epoch_ms'),
                         key=f'translate_last_denied_time_for_language [in {preferences_file}]',
                         value=f'{lang_code}: {timestamp}',
                         interpretation=f'Declined to translate page from {expand_language_code(lang_code)}')
@@ -3246,7 +3256,7 @@ class Chrome(WebBrowser):
                 try:
                     pref_item = Chrome.PreferenceItem(
                         self.profile_path, url='',
-                        timestamp=utils.to_datetime(prefs['profile']['creation_time'], self.timezone),
+                        timestamp=utils.to_datetime(prefs['profile']['creation_time'], self.timezone, format='webkit_us'),
                         key=f'creation_time [in {preferences_file}.profile]',
                         value=prefs['profile']['creation_time'], interpretation='')
                     pref_item.row_type = 'profile creation'
@@ -3548,7 +3558,7 @@ class Chrome(WebBrowser):
                         version_id=reg.version_id,
                         is_active=reg.is_active,
                         has_fetch_handler=reg.has_fetch_handler,
-                        last_update_check_time=utils.to_datetime(reg.last_update_check_time, self.timezone),
+                        last_update_check_time=utils.to_datetime(reg.last_update_check_time, self.timezone, format='webkit_us'),
                         resources_total_size_bytes=reg.resources_total_size_bytes if reg.HasField(
                             'resources_total_size_bytes') else None,
                         navigation_preload_enabled=nav_preload_enabled,
@@ -3559,7 +3569,7 @@ class Chrome(WebBrowser):
                         script_type=enum_name(
                             ServiceWorkerRegistrationData.ServiceWorkerScriptType.DESCRIPTOR,
                             reg.script_type),
-                        script_response_time=utils.to_datetime(reg.script_response_time, self.timezone)
+                        script_response_time=utils.to_datetime(reg.script_response_time, self.timezone, format='webkit_us')
                             if reg.HasField('script_response_time') else None,
                         seq=record.seq,
                         state=record.state.name,
@@ -4636,7 +4646,7 @@ class Chrome(WebBrowser):
         }
 
         if node.get('modification_time'):
-            output_row['modification_time'] = utils.to_datetime(node['modification_time'])
+            output_row['modification_time'] = utils.to_datetime(node['modification_time'], format='webkit_us')
 
         output_list.append(output_row)
         for child_node in node['children'].values():
@@ -4938,7 +4948,7 @@ class Chrome(WebBrowser):
                     # A deleted record carries no proto and so no last_loaded; none_if_unset
                     # leaves those un-timestamped rather than dating them to the epoch.
                     self.profile_path, url=matched_url,
-                    timestamp=utils.to_datetime(last_loaded, self.timezone, none_if_unset=True),
+                    timestamp=utils.to_datetime(last_loaded, self.timezone, none_if_unset=True, format='webkit_us'),
                     key=f'Status: {item["state"]}', value=str(parsed_proto), interpretation='')
                 sc_record.row_type += ' (characteristic)'
                 sc_record.source_item = source_item
@@ -5167,7 +5177,7 @@ class Chrome(WebBrowser):
 
                     hsts_record = Chrome.SiteSetting(
                         self.profile_path, url=hsts_domain,
-                        timestamp=utils.to_datetime(item['sts_observed'], self.timezone),
+                        timestamp=utils.to_datetime(item['sts_observed'], self.timezone, format='epoch_s'),
                         key='HSTS observed', value=str(item), interpretation='')
                     hsts_record.row_type += ' (hsts)'
                     hsts_record.source_item = source_item
@@ -5184,7 +5194,7 @@ class Chrome(WebBrowser):
                     if domain_settings.get('sts_observed'):
                         hsts_record = Chrome.SiteSetting(
                             self.profile_path, url=hsts_domain,
-                            timestamp=utils.to_datetime(domain_settings['sts_observed'], self.timezone),
+                            timestamp=utils.to_datetime(domain_settings['sts_observed'], self.timezone, format='epoch_s'),
                             key='HSTS observed', value=f'{hashed_domain}: {domain_settings}', interpretation='')
                         hsts_record.row_type += ' (hsts)'
                         hsts_record.source_item = source_item

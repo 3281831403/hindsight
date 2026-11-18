@@ -73,6 +73,92 @@ class TestClampBound(unittest.TestCase):
                          datetime.datetime(2022, 6, 12, 2, 13, 20, tzinfo=UTC))
 
 
+class TestDeclaredFormats(unittest.TestCase):
+    """A caller that knows its column's unit declares it, and the conversion is exact.
+
+    The magnitude heuristic misreads anything outside its expected ranges: Firefox's
+    epoch-microsecond columns (PRTime) from before ~2010 fell below its 16-digit
+    floor and came out as 1970-01-01, epoch values past 2049 fell off the top the
+    same way, and a 13-digit millisecond value from 2009 was read as seconds and
+    clamped to 1970 too. A declared format converts every date the column can hold.
+    """
+
+    WEBKIT_EPOCH = datetime.datetime(1601, 1, 1, tzinfo=UTC)
+    UNIX_EPOCH = datetime.datetime(1970, 1, 1, tzinfo=UTC)
+
+    def test_epoch_microseconds_before_2010(self):
+        # The report that started this: a 2009 bookmark and 2008/2009 cookies.
+        for dt in (datetime.datetime(2008, 7, 4, 8, 30, tzinfo=UTC),
+                   datetime.datetime(2009, 3, 15, 12, 0, tzinfo=UTC),
+                   datetime.datetime(2010, 5, 1, tzinfo=UTC)):
+            raw = int(dt.timestamp() * 1_000_000)
+            with self.subTest(dt=dt):
+                self.assertEqual(to_datetime(raw, UTC, format='epoch_us'), dt)
+                # What the heuristic did with the same value.
+                self.assertEqual(to_datetime(raw, UTC),
+                                 datetime.datetime(1970, 1, 1, tzinfo=UTC))
+
+    def test_epoch_microseconds_past_2049(self):
+        dt = datetime.datetime(2055, 1, 1, tzinfo=UTC)
+        raw = int(dt.timestamp() * 1_000_000)
+        self.assertEqual(to_datetime(raw, UTC, format='epoch_us'), dt)
+        self.assertEqual(to_datetime(raw, UTC), datetime.datetime(1970, 1, 1, tzinfo=UTC))
+
+    def test_epoch_milliseconds_before_2010(self):
+        dt = datetime.datetime(2009, 11, 20, 18, 0, tzinfo=UTC)
+        raw = int(dt.timestamp() * 1_000)
+        self.assertEqual(to_datetime(raw, UTC, format='epoch_ms'), dt)
+        self.assertEqual(to_datetime(raw, UTC), datetime.datetime(1970, 1, 1, tzinfo=UTC))
+
+    def test_each_format_uses_its_own_epoch_and_unit(self):
+        for fmt, epoch, delta in (
+                ('webkit_us', self.WEBKIT_EPOCH, datetime.timedelta(microseconds=1)),
+                ('webkit_ms', self.WEBKIT_EPOCH, datetime.timedelta(milliseconds=1)),
+                ('webkit_s', self.WEBKIT_EPOCH, datetime.timedelta(seconds=1)),
+                ('epoch_us', self.UNIX_EPOCH, datetime.timedelta(microseconds=1)),
+                ('epoch_ms', self.UNIX_EPOCH, datetime.timedelta(milliseconds=1)),
+                ('epoch_s', self.UNIX_EPOCH, datetime.timedelta(seconds=1)),
+        ):
+            with self.subTest(fmt=fmt):
+                self.assertEqual(to_datetime(1, UTC, format=fmt), epoch + delta)
+
+    def test_string_and_float_inputs_convert(self):
+        self.assertEqual(to_datetime('1655000000', UTC, format='epoch_s'),
+                         datetime.datetime(2022, 6, 12, 2, 13, 20, tzinfo=UTC))
+        self.assertEqual(to_datetime(1655000000.5, UTC, format='epoch_s'),
+                         datetime.datetime(2022, 6, 12, 2, 13, 20, 500000, tzinfo=UTC))
+
+    def test_unconvertible_values_are_none_not_1970(self):
+        # A declared column that holds garbage or nothing is a record with no
+        # readable time; None is what the outputs render as "no time".
+        for value in (None, 'not a timestamp', 10 ** 30, float('nan')):
+            with self.subTest(value=value):
+                self.assertIsNone(to_datetime(value, UTC, format='epoch_us'))
+
+    def test_sentinels_and_precision_still_apply(self):
+        self.assertIsNone(to_datetime(0, UTC, format='webkit_us', none_if_unset=True))
+        self.assertIsNone(to_datetime(0xffffffffffffffff, UTC, format='webkit_us',
+                                      none_if_unset=True))
+        # Without none_if_unset, 0 is the epoch itself -- a real time.
+        self.assertEqual(to_datetime(0, UTC, format='epoch_us'),
+                         datetime.datetime(1970, 1, 1, tzinfo=UTC))
+        # The result carries its unit's precision into the outputs.
+        self.assertEqual(friendly_date(to_datetime(1258740000000, UTC, format='epoch_ms')),
+                         '2009-11-20 18:00:00.000')
+        self.assertEqual(friendly_date(to_datetime(1258740000000000, UTC, format='epoch_us')),
+                         '2009-11-20 18:00:00.000000')
+
+    def test_unknown_format_raises(self):
+        with self.assertRaises(ValueError):
+            to_datetime(1, UTC, format='fortnights')
+
+    def test_timezone_conversion_applies(self):
+        eastern = datetime.timezone(datetime.timedelta(hours=-5))
+        self.assertEqual(
+            to_datetime(1258740000000000, eastern, format='epoch_us'),
+            datetime.datetime(2009, 11, 20, 13, 0, tzinfo=eastern))
+
+
 class TestExactIntegerConversion(unittest.TestCase):
     """Integer timestamps keep the stored microsecond (issue #393).
 

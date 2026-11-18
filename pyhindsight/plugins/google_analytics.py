@@ -23,7 +23,7 @@ parsedItems = 0
 
 
 def plugin(analysis_session=None):
-    from pyhindsight.utils import friendly_date
+    from pyhindsight.utils import friendly_date, to_datetime
     import re
     import urllib.request, urllib.parse, urllib.error
 
@@ -48,8 +48,8 @@ def plugin(analysis_session=None):
                     item.interpretation = 'Domain Hash: {} | Unique Visitor ID: {} | First Visit: {} | ' \
                                           'Previous Visit: {} | Last Visit: {} | Number of Sessions: {} | ' \
                                           '[Google Analytics Cookie]'\
-                        .format(m.group(1), m.group(2), friendly_date(m.group(3)),
-                                friendly_date(m.group(4)), friendly_date(m.group(5)),
+                        .format(m.group(1), m.group(2), friendly_date(to_datetime(m.group(3), 'epoch_s')),
+                                friendly_date(to_datetime(m.group(4), 'epoch_s')), friendly_date(to_datetime(m.group(5), 'epoch_s')),
                                 m.group(6))
                     parsedItems += 1
             if item.name == '__utmb':
@@ -57,7 +57,7 @@ def plugin(analysis_session=None):
                 if m:
                     item.interpretation = 'Domain Hash: {} | Pages Viewed: {} | Last Visit: {} | ' \
                                           '[Google Analytics Cookie]' \
-                                          .format(m.group(1), m.group(2), friendly_date(m.group(3)))
+                                          .format(m.group(1), m.group(2), friendly_date(to_datetime(m.group(3), 'epoch_s')))
                     parsedItems += 1
             if item.name == '__utmc':
                 m = re.search(utmc_re, item.value)
@@ -74,7 +74,7 @@ def plugin(analysis_session=None):
                 m = re.search(utmz_re, item.value)
                 if m:
                     derived = 'Domain Hash: {} | Last Visit: {} | Sessions: {} | Sources: {} | ' \
-                              .format(m.group(1), friendly_date(m.group(2)), m.group(3), m.group(4))
+                              .format(m.group(1), friendly_date(to_datetime(m.group(2), 'epoch_s')), m.group(3), m.group(4))
                     parsedItems += 1
                     p = re.search(utmz_parameters_re, item.value)
 
@@ -130,7 +130,7 @@ def plugin(analysis_session=None):
                 m = re.search(ga_re, item.value)
                 if m:
                     item.interpretation = 'Client ID: {}.{} | First Visit: {} | [Google Analytics Cookie]' \
-                        .format(m.group(1), m.group(2), friendly_date(m.group(2)))
+                        .format(m.group(1), m.group(2), friendly_date(to_datetime(m.group(2), 'epoch_s')))
                     parsedItems += 1
 
     # Description of what the plugin did

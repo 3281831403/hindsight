@@ -85,6 +85,6 @@ def decode(user_data_key, value, timezone):
     # timestamp is "from Windows epoch in microseconds" per the proto comment.
     event_time = None
     if entry.HasField('timestamp') and entry.timestamp:
-        event_time = utils.to_datetime(entry.timestamp, timezone)
+        event_time = utils.to_datetime(entry.timestamp, timezone, format='webkit_us')
 
     return ('content index (entry)', '; '.join(pieces), event_time)

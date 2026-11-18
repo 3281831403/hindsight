@@ -19,7 +19,7 @@ parsedItems = 0
 
 
 def plugin(analysis_session=None):
-    from pyhindsight.utils import friendly_date
+    from pyhindsight.utils import friendly_date, to_datetime
     import re
     if analysis_session is None:
         return
@@ -33,7 +33,12 @@ def plugin(analysis_session=None):
             if item.name == '__qca':
                 m = re.search(timestamp_re, item.value)
                 if m:
-                    item.interpretation = friendly_date(int(m.group(3))) \
+                    # The capture is 10 or 13 digits: epoch seconds or milliseconds.
+                    raw = m.group(3)
+                    decoded = to_datetime(int(raw), format={10: 'epoch_s', 13: 'epoch_ms'}[len(raw)])
+                    if decoded is None:
+                        continue
+                    item.interpretation = friendly_date(decoded) \
                                           + ' [Quantcast Cookie Timestamp]'
                     parsedItems += 1
 

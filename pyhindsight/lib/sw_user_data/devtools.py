@@ -40,7 +40,7 @@ def decode(user_data_key, value, timezone):
 
     service_label = (BackgroundService.Name(evt.background_service).lower()
                      if evt.HasField('background_service') else 'unknown')
-    ts = (utils.to_datetime(evt.timestamp, timezone)
+    ts = (utils.to_datetime(evt.timestamp, timezone, format='webkit_us')
           if evt.HasField('timestamp') else None)
 
     pieces = []

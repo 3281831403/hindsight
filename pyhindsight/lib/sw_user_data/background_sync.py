@@ -43,7 +43,7 @@ def decode(user_data_key, value, timezone):
     # delay_until is base::Time delta-since-Windows-epoch in microseconds;
     # 0 means "no delay / fire when conditions met".
     if reg.HasField('delay_until') and reg.delay_until:
-        pieces.append(f'delay_until={utils.to_datetime(reg.delay_until, timezone)}')
+        pieces.append(f'delay_until={utils.to_datetime(reg.delay_until, timezone, format="webkit_us")}')
     if reg.HasField('periodic_sync_options') \
             and reg.periodic_sync_options.HasField('min_interval'):
         pieces.append(f'min_interval_ms={reg.periodic_sync_options.min_interval}')

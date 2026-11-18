@@ -19,7 +19,7 @@ parsedItems = 0
 
 
 def plugin(analysis_session=None):
-    from pyhindsight.utils import friendly_date
+    from pyhindsight.utils import friendly_date, to_datetime
     import re
     if analysis_session is None:
         return
@@ -29,16 +29,29 @@ def plugin(analysis_session=None):
     global parsedItems
     parsedItems = 0
 
+    # The digit count is the only unit hint a loose value gives, so declare it:
+    # routing a 13-digit millisecond value through the magnitude heuristic instead
+    # misreads anything before 2010 as epoch seconds and reports it as 1970.
+    formats_by_digits = {10: 'epoch_s', 13: 'epoch_ms', 16: 'epoch_us', 17: 'webkit_us'}
+
     def decode(item, value):
         """Set an interpretation if the value looks like a timestamp. Returns 1 if it did."""
         m = re.search(timestamp_re, value)
         if m:
-            item.interpretation = friendly_date(int(m.group(0))) + ' [potential timestamp]'
-            return 1
+            raw = m.group(0)
+            decoded = to_datetime(int(raw), format=formats_by_digits[len(raw)])
+            if decoded is not None:
+                item.interpretation = friendly_date(decoded) + ' [potential timestamp]'
+                return 1
+            return 0
         ls_m = re.search(ls_timestamp_re, value)
         if ls_m:
-            item.interpretation = friendly_date(int(ls_m.group(1))) + ' [potential timestamp]'
-            return 1
+            raw = ls_m.group(1)
+            fmt = formats_by_digits.get(len(raw))
+            decoded = to_datetime(int(raw), format=fmt) if fmt else to_datetime(int(raw))
+            if decoded is not None:
+                item.interpretation = friendly_date(decoded) + ' [potential timestamp]'
+                return 1
         return 0
 
     for item in analysis_session.parsed_artifacts:

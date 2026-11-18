@@ -77,7 +77,7 @@ def decode(user_data_key, value, timezone):
         # Per proto comment: offset from Windows epoch in microseconds.
         pieces.append(
             f'show_trigger_timestamp='
-            f'{utils.to_datetime(nd.show_trigger_timestamp, timezone)}')
+            f'{utils.to_datetime(nd.show_trigger_timestamp, timezone, format="webkit_us")}')
     if ndata.HasField('has_triggered'):
         pieces.append(f'has_triggered={ndata.has_triggered}')
     if nd.actions:

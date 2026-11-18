@@ -290,8 +290,8 @@ class Firefox(WebBrowser):
 
             source_item = utils.relpath(os.path.join(path, database), self.profile_path)
             for row in cursor:
-                visit_time = utils.to_datetime(row.get('visit_date'), self.timezone)
-                last_visit_time = utils.to_datetime(row.get('last_visit_date'), self.timezone) \
+                visit_time = utils.to_datetime(row.get('visit_date'), self.timezone, format='epoch_us')
+                last_visit_time = utils.to_datetime(row.get('last_visit_date'), self.timezone, format='epoch_us') \
                     if row.get('last_visit_date') else visit_time
 
                 new_row = Firefox.URLItem(
@@ -345,8 +345,8 @@ class Firefox(WebBrowser):
             for row in rows:
                 bm_type = row.get('type')
                 parent_folder = folder_titles.get(row.get('parent'), '')
-                date_added = utils.to_datetime(row.get('dateAdded'), self.timezone)
-                date_modified = utils.to_datetime(row.get('lastModified'), self.timezone) \
+                date_added = utils.to_datetime(row.get('dateAdded'), self.timezone, format='epoch_us')
+                date_modified = utils.to_datetime(row.get('lastModified'), self.timezone, format='epoch_us') \
                     if row.get('lastModified') else date_added
 
                 if bm_type == BOOKMARK_TYPE_URL:
@@ -403,8 +403,8 @@ class Firefox(WebBrowser):
             source_item = utils.relpath(os.path.join(path, database), self.profile_path)
             zero_ts = datetime.datetime.fromtimestamp(0, datetime.timezone.utc)
             for row in cursor:
-                creation = utils.to_datetime(row.get('creationTime'), self.timezone)
-                accessed = utils.to_datetime(row.get('lastAccessed'), self.timezone)
+                creation = utils.to_datetime(row.get('creationTime'), self.timezone, format='epoch_us')
+                accessed = utils.to_datetime(row.get('lastAccessed'), self.timezone, format='epoch_us')
                 # `expiry` is unix seconds (not PRTime). 0 means session cookie.
                 expiry_raw = row.get('expiry')
                 if expiry_raw:
@@ -478,8 +478,8 @@ class Firefox(WebBrowser):
 
             source_item = utils.relpath(os.path.join(path, database), self.profile_path)
             for row in cursor:
-                start = utils.to_datetime(row.get('start_time'), self.timezone)
-                end = utils.to_datetime(row.get('end_time'), self.timezone) if row.get('end_time') else start
+                start = utils.to_datetime(row.get('start_time'), self.timezone, format='epoch_us')
+                end = utils.to_datetime(row.get('end_time'), self.timezone, format='epoch_us') if row.get('end_time') else start
                 target = row.get('target') or ''
                 if target.startswith('file:///'):
                     try:
@@ -555,7 +555,7 @@ class Firefox(WebBrowser):
                     continue
 
                 if has_usage:
-                    first_used = utils.to_datetime(row.get('firstUsed'), self.timezone)
+                    first_used = utils.to_datetime(row.get('firstUsed'), self.timezone, format='epoch_us')
                     item = Firefox.AutofillItem(
                         profile=self.profile_path,
                         date_created=first_used,
@@ -621,11 +621,9 @@ class Firefox(WebBrowser):
 
             source_item = utils.relpath(os.path.join(path, database), self.profile_path)
             for row in cursor:
-                # ms -> PRTime us so to_datetime hits its 16-digit branch, then marked
-                # as ms so the output doesn't claim microseconds.
+                # modificationTime is JS milliseconds since the epoch.
                 mod_ms = row.get('modificationTime') or 0
-                mod_time = utils.with_precision(utils.to_datetime(mod_ms * 1000, self.timezone), 'ms') if mod_ms else \
-                    datetime.datetime.fromtimestamp(0, datetime.timezone.utc)
+                mod_time = utils.to_datetime(mod_ms, self.timezone, format='epoch_ms') if mod_ms else None
 
                 perm_value = row.get('permission')
                 perm_label = self._PERMISSION_VALUES.get(perm_value, f'Unknown ({perm_value})')
@@ -634,7 +632,7 @@ class Firefox(WebBrowser):
 
                 exp_ms = row.get('expireTime') or 0
                 if expire_type == 2 and exp_ms:
-                    expires = utils.with_precision(utils.to_datetime(exp_ms * 1000, self.timezone), 'ms')
+                    expires = utils.to_datetime(exp_ms, self.timezone, format='epoch_ms')
                     interpretation = f'{expire_label}: {expires.isoformat()}'
                 else:
                     interpretation = expire_label
@@ -869,7 +867,6 @@ class Firefox(WebBrowser):
             return None
 
         source_item = utils.relpath(full_path, self.profile_path)
-        zero_ts = datetime.datetime.fromtimestamp(0, datetime.timezone.utc)
 
         for login in data.get('logins', []):
             hostname = login.get('hostname') or login.get('formSubmitURL') or ''
@@ -887,8 +884,8 @@ class Firefox(WebBrowser):
 
             def _to_dt(ms):
                 if not ms:
-                    return zero_ts
-                return utils.with_precision(utils.to_datetime(ms * 1000, self.timezone), 'ms')
+                    return None
+                return utils.to_datetime(ms, self.timezone, format='epoch_ms')
 
             interp_parts = [
                 f'GUID: {guid}',
@@ -934,7 +931,7 @@ class Firefox(WebBrowser):
         for guid in data.get('potentiallyVulnerablePasswords', []) or []:
             item = Firefox.LoginItem(
                 profile=self.profile_path,
-                date_created=zero_ts,
+                date_created=None,
                 url='<aggregate>',
                 name='potentiallyVulnerablePassword',
                 value=guid if isinstance(guid, str) else json.dumps(guid),
@@ -942,7 +939,7 @@ class Firefox(WebBrowser):
                 interpretation='Firefox flagged this saved login GUID as potentially exposed in a known breach',
             )
             item.row_type = 'login (vulnerable)'
-            item.timestamp = zero_ts
+            item.timestamp = None
             item.source_item = source_item
             results.append(item)
 
@@ -1172,8 +1169,8 @@ class Firefox(WebBrowser):
                 state = None
 
             # Also set the fields Chrome fills from Secure Preferences, so the
-            # Extensions worksheet shows them for both browsers. ms -> PRTime us so
-            # to_datetime hits its 16-digit branch, then marked as ms.
+            # Extensions worksheet shows them for both browsers. The source values
+            # are JS milliseconds since the epoch.
             ext = Firefox.BrowserExtension(
                 profile=self.profile_path,
                 ext_id=ext_id,
@@ -1182,8 +1179,8 @@ class Firefox(WebBrowser):
                 version=version,
                 permissions=permissions_str,
                 manifest=json.dumps(manifest_summary),
-                install_time=utils.with_precision(utils.to_datetime(install_ms * 1000, self.timezone), 'ms') if install_ms else None,
-                update_time=utils.with_precision(utils.to_datetime(update_ms * 1000, self.timezone), 'ms') if update_ms else None,
+                install_time=utils.to_datetime(install_ms, self.timezone, format='epoch_ms') if install_ms else None,
+                update_time=utils.to_datetime(update_ms, self.timezone, format='epoch_ms') if update_ms else None,
                 location=location or None,
                 state=state,
             )
@@ -1283,7 +1280,7 @@ class Firefox(WebBrowser):
                     profile=self.profile_path,
                     url=url,
                     title=title,
-                    timestamp=utils.with_precision(utils.to_datetime(tab_last_accessed_ms * 1000, self.timezone), 'ms'),
+                    timestamp=utils.to_datetime(tab_last_accessed_ms, self.timezone, format='epoch_ms'),
                     session_id=tab_id,
                     nav_index=nav_idx,
                     referrer_url=referrer,
@@ -1366,7 +1363,7 @@ class Firefox(WebBrowser):
                         profile=self.profile_path,
                         url=url,
                         title=entry.get('title') or '',
-                        timestamp=utils.with_precision(utils.to_datetime(ts_ms * 1000, self.timezone), 'ms'),
+                        timestamp=utils.to_datetime(ts_ms, self.timezone, format='epoch_ms'),
                         session_id=f'{window_id}.closed{c_idx}',
                         nav_index=nav_idx,
                         referrer_url=entry.get('referrer') or '',
@@ -1394,7 +1391,7 @@ class Firefox(WebBrowser):
                         profile=self.profile_path,
                         url=url,
                         title=entry.get('title') or '',
-                        timestamp=utils.with_precision(utils.to_datetime(ts_ms * 1000, self.timezone), 'ms'),
+                        timestamp=utils.to_datetime(ts_ms, self.timezone, format='epoch_ms'),
                         # No snapshot label: the same closed window recurs across
                         # snapshots, and identical rows are collapsed below.
                         session_id=f'closedwin{cw_idx}.t{t_idx}',
@@ -1501,7 +1498,6 @@ class Firefox(WebBrowser):
             log.info(f' - {backups_dir} not present')
             return 0
 
-        zero_ts = datetime.datetime.fromtimestamp(0, datetime.timezone.utc)
         results = []
         unparsed = ParseFailures('Bookmark Backups')
 
@@ -1510,8 +1506,8 @@ class Firefox(WebBrowser):
             title = node.get('title') or ''
             date_added = node.get('dateAdded') or 0
             last_modified = node.get('lastModified') or date_added
-            ts = utils.to_datetime(date_added, self.timezone) if date_added else zero_ts
-            mod_ts = utils.to_datetime(last_modified, self.timezone) if last_modified else ts
+            ts = utils.to_datetime(date_added, self.timezone, format='epoch_us') if date_added else None
+            mod_ts = utils.to_datetime(last_modified, self.timezone, format='epoch_us') if last_modified else ts
 
             if type_code == 1:
                 url = node.get('uri') or node.get('url') or ''
@@ -1594,14 +1590,13 @@ class Firefox(WebBrowser):
                 return None
 
             source_item = utils.relpath(os.path.join(path, database), self.profile_path)
-            zero_ts = datetime.datetime.fromtimestamp(0, datetime.timezone.utc)
 
             for row in cursor:
                 expire_ms = row.get('expire_ms') or 0
                 if expire_ms:
-                    expire_dt = utils.with_precision(utils.to_datetime(expire_ms * 1000, self.timezone), 'ms')
+                    expire_dt = utils.to_datetime(expire_ms, self.timezone, format='epoch_ms')
                 else:
-                    expire_dt = zero_ts
+                    expire_dt = None
 
                 icon_url = row.get('icon_url') or ''
                 width = row.get('width') or 0
@@ -1673,7 +1668,7 @@ class Firefox(WebBrowser):
 
             source_item = utils.relpath(os.path.join(path, database), self.profile_path)
             for row in cursor:
-                ts = utils.to_datetime(row.get('timeStamp'), self.timezone)
+                ts = utils.to_datetime(row.get('timeStamp'), self.timezone, format='epoch_us')
                 entry_type = row.get('entryType')
                 entry_label = self._BOUNCE_ENTRY_TYPES.get(
                     entry_type, f'Unknown ({entry_type})')
@@ -2318,7 +2313,7 @@ class Firefox(WebBrowser):
                     last_access_raw = row.get('last_access_time') or 0
                     if last_access_raw:
                         last_modified = utils.to_datetime(
-                            last_access_raw, self.timezone)
+                            last_access_raw, self.timezone, format='epoch_us')
                     else:
                         # last_access_time=0 is common; fall back to file mtime.
                         try:

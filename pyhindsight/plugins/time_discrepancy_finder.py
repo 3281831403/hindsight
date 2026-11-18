@@ -36,6 +36,13 @@ def plugin(analysis_session=None):
     global parsedItems
     parsedItems = 0
 
+    def server_time(raw):
+        # The regexes capture exactly 10 or 13 digits, so the unit is known:
+        # epoch seconds or epoch milliseconds. Declaring it keeps a pre-2010
+        # millisecond value from being misread as seconds and landing in 1970.
+        fmt = {10: 'epoch_s', 13: 'epoch_ms'}.get(len(raw))
+        return to_datetime(raw, datetime.timezone.utc, format=fmt) if fmt else             to_datetime(raw, datetime.timezone.utc)
+
     cookie_set = [
         # website                   # cookie name            # regex for timestamp
         {'.pubmatic.com/':          {'name': '_curtime',     'regex': r'(\d{10})'}},
@@ -78,7 +85,7 @@ def plugin(analysis_session=None):
                         if site[list(site.keys())[0]]['name'] == item.name:
                             m = re.search(site[list(site.keys())[0]]['regex'], item.value)
                             if m:
-                                server = to_datetime(m.group(1), datetime.timezone.utc)
+                                server = server_time(m.group(1))
                                 local = item.timestamp
                                 if local is None:
                                     continue  # no local time to compare the server one against
@@ -91,7 +98,7 @@ def plugin(analysis_session=None):
                 for site in url_set:
                     m = re.search(site, item.url)
                     if m:
-                        server = to_datetime(m.group(1), datetime.timezone.utc)
+                        server = server_time(m.group(1))
                         local = item.timestamp
                         if local is None:
                             continue  # no local time to compare the server one against

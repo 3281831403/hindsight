@@ -263,9 +263,49 @@ class MyEncoder(json.JSONEncoder):
             return obj.__dict__
 
 
+# Timestamp formats a caller can declare for its source column. Guessing the unit
+# from a value's magnitude misreads anything outside the expected range: Firefox's
+# epoch-microsecond columns from before 2010 fall below the heuristic's floor and
+# used to come out as 1970, and epoch values past 2049 fell off the top the same
+# way. A declared format converts exactly, for any date the column can hold.
+TIMESTAMP_FORMATS = ('webkit_us', 'webkit_ms', 'webkit_s', 'epoch_us', 'epoch_ms', 'epoch_s')
+
+_FORMAT_DELTAS = {
+    'webkit_us': (WEBKIT_EPOCH, 'microseconds', 'us'),
+    'webkit_ms': (WEBKIT_EPOCH, 'milliseconds', 'ms'),
+    'webkit_s': (WEBKIT_EPOCH, 'seconds', 's'),
+    'epoch_us': (UNIX_EPOCH, 'microseconds', 'us'),
+    'epoch_ms': (UNIX_EPOCH, 'milliseconds', 'ms'),
+    'epoch_s': (UNIX_EPOCH, 'seconds', 's'),
+}
+
+
+def _convert_declared(value, format):
+    """Convert a numeric value by its column's declared unit; raise on failure.
+
+    Kept separate from to_datetime so the failure path there can decide what an
+    unconvertible value means. OverflowError covers both a timedelta too large to
+    hold and an epoch-plus-delta past datetime.max.
+    """
+    epoch, unit, precision = _FORMAT_DELTAS[format]
+    if isinstance(value, (int, str, bytes)):
+        try:
+            value = int(value)
+        except ValueError:
+            value = float(value)  # e.g. '1.5'; a float has no finer digits to keep
+    return with_precision(epoch + datetime.timedelta(**{unit: value}), precision)
+
+
 def to_datetime(timestamp, timezone=None, quiet=False, none_if_unset=False,
-                none_on_failure=False):
+                none_on_failure=False, format=None):
     """Convert a variety of timestamp formats to a datetime object.
+
+    If format is given (one of TIMESTAMP_FORMATS), the value is converted as that
+    unit and nothing else -- no magnitude heuristics, so a 2008 epoch-microsecond
+    value and a 2050 one convert exactly like a 2024 one. A value that cannot be
+    converted in the declared unit (NULL, non-numeric, out of range) returns None:
+    the record has no readable time, and None is what the outputs render as "no
+    time" (JSONL 'Not a time', SQLite NULL, XLSX blank) rather than a fake 1970.
 
     If none_if_unset is True, the common Chrome "unset" sentinels -- 0 and the
     all-ones value (0xffffffffffffffff / UINT64_MAX) -- return None instead of being
@@ -276,10 +316,16 @@ def to_datetime(timestamp, timezone=None, quiet=False, none_if_unset=False,
     rather than the epoch. The epoch is a real date that browsers do record, so using it
     as the "could not parse" marker makes a genuine 1970 timestamp indistinguishable from
     a corrupt one. Callers that opt in should keep the raw value themselves -- None says
-    only that no time could be read, not what was actually stored.
+    only that no time could be read, not what was actually stored. A declared format
+    implies this behavior.
     """
     def unconvertible():
-        return None if none_on_failure else datetime.datetime.fromtimestamp(0, datetime.UTC)
+        return None if (none_on_failure or format is not None) \
+            else datetime.datetime.fromtimestamp(0, datetime.UTC)
+
+    if format is not None and format not in _FORMAT_DELTAS:
+        raise ValueError(f'unknown timestamp format {format!r}; '
+                         f'expected one of {TIMESTAMP_FORMATS}')
 
     try:
         if none_if_unset:
@@ -295,6 +341,19 @@ def to_datetime(timestamp, timezone=None, quiet=False, none_if_unset=False,
             if timezone is not None:
                 return timestamp.astimezone(timezone)
             return timestamp
+
+        if format is not None:
+            if timestamp is None:
+                return None
+            try:
+                new_timestamp = _convert_declared(timestamp, format)
+            except (OverflowError, OSError, TypeError, ValueError) as e:
+                if not quiet:
+                    log.warning(f'Exception parsing {timestamp} as {format}: {e}')
+                return unconvertible()
+            if timezone is not None:
+                return new_timestamp.astimezone(timezone)
+            return new_timestamp
 
         # Keep an integer as an integer. A WebKit microsecond value of today's size has
         # more digits than a double holds (float(13363303391354559) is ...560), and
